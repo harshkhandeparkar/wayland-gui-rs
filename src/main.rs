@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::ffi::{CStr, CString};
+use std::io;
 use std::process::exit;
-use std::{fs, io};
+
+use image::{DynamicImage, ImageReader};
 
 use crate::utils::WaylandShmDoubleBufARGB8888;
 
@@ -173,6 +176,8 @@ struct ClientState {
 struct WaylandClient {
     sock: WaylandSocket,
 
+    img_data_rgba8: Vec<u8>,
+
     state: ClientState,
 
     advertised_interfaces: HashMap<CString, InterfaceInfo>,
@@ -188,11 +193,14 @@ struct WaylandClient {
 }
 
 impl WaylandClient {
-    fn new() -> Self {
+    fn new(image: DynamicImage) -> Self {
         let sock = WaylandSocket::new();
+        let img_width = image.width();
+        let img_height = image.height();
 
         Self {
             sock,
+            img_data_rgba8: image.to_rgba8().into_raw(),
             state: ClientState {
                 status: ClientStatus::Connected,
                 pending_ping: None,
@@ -203,10 +211,10 @@ impl WaylandClient {
             interfaces: InterfaceIds::default(),
             advertised_interfaces: HashMap::new(),
 
-            window_width: 117,
-            window_height: 150,
-            draw_width: 117,
-            draw_height: 150,
+            window_width: img_width,
+            window_height: img_height,
+            draw_width: img_width,
+            draw_height: img_height,
 
             surface_buffers: None,
         }
@@ -319,16 +327,15 @@ impl WaylandClient {
         Ok(())
     }
 
-    fn draw(&mut self, image: Vec<u8>) -> io::Result<()> {
-        let image = &image[15..];
+    fn draw(&mut self) -> io::Result<()> {
+        let image: &[u8] = self.img_data_rgba8.as_ref();
 
         if let Some(surface_buf) = self.surface_buffers.as_mut() {
-            let img_stride = (self.draw_width as usize) * 3;
-            let pixels_stride = surface_buf.width as usize;
+            let img_row_stride = (self.draw_width as usize) * 4;
+            let img_col_stride = 4;
 
+            let buf_row_stride = surface_buf.width as usize;
             let pixels = surface_buf.get_draw_buffer_mut();
-
-            let a = 0xff;
 
             let x_offset = ((self.window_width - self.draw_width) / 2) as usize;
             let y_offset = ((self.window_height - self.draw_height) / 2) as usize;
@@ -336,12 +343,13 @@ impl WaylandClient {
 
             for row in 0..(self.draw_height as usize) {
                 for col in 0..(self.draw_width as usize) {
-                    let r = image[row * img_stride + col * 3] as u32;
-                    let g = image[row * img_stride + col * 3 + 1] as u32;
-                    let b = image[row * img_stride + col * 3 + 2] as u32;
+                    let r = image[row * img_row_stride + col * img_col_stride] as u32;
+                    let g = image[row * img_row_stride + col * img_col_stride + 1] as u32;
+                    let b = image[row * img_row_stride + col * img_col_stride + 2] as u32;
+                    let a = image[row * img_row_stride + col * img_col_stride + 3] as u32;
 
                     let pixel_data = (a << 24) | (r << 16) | (g << 8) | b;
-                    pixels[(row + y_offset) * pixels_stride + col + x_offset] = pixel_data;
+                    pixels[(row + y_offset) * buf_row_stride + col + x_offset] = pixel_data;
                 }
             }
 
@@ -574,9 +582,7 @@ impl WaylandClient {
                 self.state.status = ClientStatus::Drawing;
             }
             ClientStatus::Drawing => {
-                let logo_file = fs::read("./wayland.ppm").unwrap();
-
-                self.draw(logo_file)?;
+                self.draw()?;
                 self.state.status = ClientStatus::Idle;
             }
             ClientStatus::Resizing => {
@@ -660,8 +666,9 @@ impl WaylandClient {
     }
 }
 
-fn main() {
-    let mut client = WaylandClient::new();
+fn main() -> Result<(), Box<dyn Error>> {
+    let image = ImageReader::open("wayland.png")?.decode()?;
+    let mut client = WaylandClient::new(image);
 
     println!("Client created");
 
