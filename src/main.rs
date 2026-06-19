@@ -377,11 +377,13 @@ impl WaylandClient {
             println!("drawing with offsets x = {x_offset} y = {y_offset}");
 
             for row in 0..(self.draw_height as usize) {
-                for col in 0..(self.draw_width as usize) {
-                    let pixel_data = image[row * img_row_stride + col];
+                let img_row_start = row * img_row_stride;
+                let img_row = &image[img_row_start..img_row_start + img_row_stride];
 
-                    pixels[(row + y_offset) * buf_row_stride + col + x_offset] = pixel_data;
-                }
+                let pixels_row_start = (row + y_offset) * buf_row_stride + x_offset;
+                let pixels_row = &mut pixels[pixels_row_start..pixels_row_start + img_row_stride];
+
+                pixels_row.copy_from_slice(img_row);
             }
 
             let attach_buf_id = surface_buf.commit_draw();
@@ -392,10 +394,10 @@ impl WaylandClient {
 
             self.sock.wl_surface_damage_buffer(
                 self.interfaces.wl_surface,
-                0,
-                0,
-                surface_buf.width as i32,
-                surface_buf.height as i32,
+                x_offset as i32,
+                y_offset as i32,
+                self.draw_width as i32,
+                self.draw_height as i32,
             )?;
             println!("Successfully damaged the `wl_surface`.");
 
