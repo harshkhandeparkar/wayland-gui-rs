@@ -206,7 +206,10 @@ impl<'a> Iterator for MsgBufReader<'a> {
     }
 }
 
-// Handles wayland socket communication
+#[repr(align(4))]
+/// Handles wayland socket communication
+/// Aligned to 4-byte addresses as Wayland communication is aligned to u32s and this allows using
+/// [std::slice::from_raw_parts] and [core::slice::align_to]
 pub struct WaylandSocket {
     sock: UnixStream,
     last_obj_id: u32,
