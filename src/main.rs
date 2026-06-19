@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{CStr, CString};
-use std::io;
+use std::fs::File;
+use std::io::{self, BufReader};
 use std::process::exit;
 
-use image::{DynamicImage, ImageReader};
-
-use crate::utils::WaylandShmDoubleBufARGB8888;
+use crate::utils::{U32AlignedBuf, WaylandShmDoubleBufARGB8888};
 
 mod utils;
 mod wayland;
@@ -176,8 +175,7 @@ struct ClientState {
 struct WaylandClient {
     sock: WaylandSocket,
 
-    img_data_rgba8: Vec<u8>,
-
+    img_argb8: Vec<u32>,
     state: ClientState,
 
     advertised_interfaces: HashMap<CString, InterfaceInfo>,
@@ -193,14 +191,52 @@ struct WaylandClient {
 }
 
 impl WaylandClient {
-    fn new(image: DynamicImage) -> Self {
+    fn new(image_path: &str) -> Self {
         let sock = WaylandSocket::new();
-        let img_width = image.width();
-        let img_height = image.height();
+
+        // Reading the image
+        let decoder = png::Decoder::new(BufReader::new(File::open(image_path).unwrap()));
+        let mut reader = decoder.read_info().unwrap();
+        let image_info = reader.info();
+
+        let img_width = image_info.width;
+        let img_height = image_info.height;
+
+        let img_buf_size = (img_width as usize) * (img_height as usize) * 4;
+        let mut img_buf = U32AlignedBuf::with_size(img_buf_size);
+
+        reader.next_frame(img_buf.bytes_mut()).unwrap();
+
+        // It is completely utilized
+        img_buf.set_len(img_buf_size);
+
+        let (chunks, remainder) = img_buf.bytes_mut().as_chunks_mut::<4>();
+        assert!(
+            remainder.is_empty(),
+            "Pixels buffer not in multiples of 4 bytes."
+        );
+
+        for chunk in chunks {
+            let [r, g, b, a] = chunk;
+
+            let r_u32 = *r as u32;
+            let g_u32 = *g as u32;
+            let b_u32 = *b as u32;
+            let a_u32 = *a as u32;
+
+            // Alpha must be premultiplied with the RGB channels
+            *r = ((r_u32 * a_u32) >> 8) as u8;
+            *g = ((g_u32 * a_u32) >> 8) as u8;
+            *b = ((b_u32 * a_u32) >> 8) as u8;
+
+            // Since it is little endian, the format is actually BGRA
+            // The lowest byte is B, and it is stored at the lowest address (i.e., first byte)
+            chunk[0..3].reverse();
+        }
 
         Self {
             sock,
-            img_data_rgba8: image.to_rgba8().into_raw(),
+            img_argb8: img_buf.into_u32_vec(),
             state: ClientState {
                 status: ClientStatus::Connected,
                 pending_ping: None,
@@ -328,11 +364,10 @@ impl WaylandClient {
     }
 
     fn draw(&mut self) -> io::Result<()> {
-        let image: &[u8] = self.img_data_rgba8.as_ref();
+        let image = self.img_argb8.as_slice();
 
         if let Some(surface_buf) = self.surface_buffers.as_mut() {
-            let img_row_stride = (self.draw_width as usize) * 4;
-            let img_col_stride = 4;
+            let img_row_stride = self.draw_width as usize;
 
             let buf_row_stride = surface_buf.width as usize;
             let pixels = surface_buf.get_draw_buffer_mut();
@@ -343,12 +378,8 @@ impl WaylandClient {
 
             for row in 0..(self.draw_height as usize) {
                 for col in 0..(self.draw_width as usize) {
-                    let r = image[row * img_row_stride + col * img_col_stride] as u32;
-                    let g = image[row * img_row_stride + col * img_col_stride + 1] as u32;
-                    let b = image[row * img_row_stride + col * img_col_stride + 2] as u32;
-                    let a = image[row * img_row_stride + col * img_col_stride + 3] as u32;
+                    let pixel_data = image[row * img_row_stride + col];
 
-                    let pixel_data = (a << 24) | (r << 16) | (g << 8) | b;
                     pixels[(row + y_offset) * buf_row_stride + col + x_offset] = pixel_data;
                 }
             }
@@ -667,8 +698,7 @@ impl WaylandClient {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let image = ImageReader::open("wayland.png")?.decode()?;
-    let mut client = WaylandClient::new(image);
+    let mut client = WaylandClient::new("wayland.png");
 
     println!("Client created");
 

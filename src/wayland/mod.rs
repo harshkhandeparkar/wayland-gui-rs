@@ -1,6 +1,5 @@
 use nix::sys::socket::{ControlMessage, MsgFlags, sendmsg};
 
-use crate::roundup_4;
 use std::{
     env,
     ffi::{CStr, CString},
@@ -14,7 +13,7 @@ use std::{
 pub fn read_wl_string(buf: &[u8]) -> (usize, usize, &CStr, &[u8]) {
     let str_size = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
     let str_size = usize::try_from(str_size).unwrap();
-    let padded_str_size = roundup_4!(str_size) + 4;
+    let padded_str_size = str_size.next_multiple_of(4) + 4;
 
     assert!(
         padded_str_size <= buf.len(),
@@ -35,7 +34,7 @@ pub fn read_wl_string(buf: &[u8]) -> (usize, usize, &CStr, &[u8]) {
 pub fn write_wl_string(string: &CStr, buf: &mut Vec<u8>) {
     let mut string_bytes = string.to_bytes_with_nul().to_vec();
     let str_len = string_bytes.len();
-    let padded_len = roundup_4!(str_len);
+    let padded_len = str_len.next_multiple_of(4);
 
     // Null pad the bytes
     string_bytes.resize(padded_len, 0);
@@ -65,7 +64,7 @@ pub fn read_wl_u16(buf: &[u8]) -> (u16, &[u8]) {
 pub fn read_wl_array(buf: &[u8]) -> (&[u32], &[u8]) {
     let (size, buf) = read_wl_u32(buf);
     let size = usize::try_from(size).unwrap();
-    let padded_size = roundup_4!(size);
+    let padded_size = size.next_multiple_of(4);
 
     let (prefix, arr, suffix) = unsafe { &buf[0..size].align_to::<u32>() };
 
