@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::process::exit;
 
-use crate::utils::{U32AlignedBuf, WaylandShmDoubleBufARGB8888};
+use crate::utils::WaylandShmDoubleBufARGB8888;
 
 mod utils;
 mod wayland;
@@ -81,7 +81,7 @@ impl SurfaceBuffers {
     }
 
     /// Returns a mutable reference to the draw buffer (back buffer)
-    pub fn get_draw_buffer_mut(&mut self) -> &mut [u32] {
+    pub fn get_draw_buffer_mut(&mut self) -> &mut [u8] {
         if self.first_buf_front {
             if self.buf_2_drawable {
                 self.get_pixels_mut().1
@@ -124,24 +124,10 @@ impl SurfaceBuffers {
     }
 
     /// Returns a mutable slices to both the buffers in the shared memory
-    fn get_pixels_mut(&mut self) -> (&mut [u32], &mut [u32]) {
+    fn get_pixels_mut(&mut self) -> (&mut [u8], &mut [u8]) {
         let end = (self.shm.size as usize) / 2;
 
-        let (buf_1, buf_2) = self.shm.mmap.split_at_mut(end);
-
-        let (prefix_1, buf_1, suffix_1) = unsafe { buf_1.align_to_mut() };
-        let (prefix_2, buf_2, suffix_2) = unsafe { buf_2.align_to_mut() };
-
-        assert!(
-            prefix_1.is_empty() && suffix_1.is_empty(),
-            "Bytes of the first shared buffer not aligned to u32."
-        );
-        assert!(
-            prefix_2.is_empty() && suffix_2.is_empty(),
-            "Bytes of the second shared buffer not aligned to u32."
-        );
-
-        (buf_1, buf_2)
+        self.shm.mmap.split_at_mut(end)
     }
 }
 
@@ -175,7 +161,7 @@ struct ClientState {
 struct WaylandClient {
     sock: WaylandSocket,
 
-    img_argb8: Vec<u32>,
+    img_argb8: Vec<u8>,
     state: ClientState,
 
     advertised_interfaces: HashMap<CString, InterfaceInfo>,
@@ -203,14 +189,11 @@ impl WaylandClient {
         let img_height = image_info.height;
 
         let img_buf_size = (img_width as usize) * (img_height as usize) * 4;
-        let mut img_buf = U32AlignedBuf::with_size(img_buf_size);
+        let mut img_buf: Vec<u8> = vec![0; img_buf_size];
 
-        reader.next_frame(img_buf.bytes_mut()).unwrap();
+        reader.next_frame(img_buf.as_mut_slice()).unwrap();
 
-        // It is completely utilized
-        img_buf.set_len(img_buf_size);
-
-        let (chunks, remainder) = img_buf.bytes_mut().as_chunks_mut::<4>();
+        let (chunks, remainder) = img_buf.as_mut_slice().as_chunks_mut::<4>();
         assert!(
             remainder.is_empty(),
             "Pixels buffer not in multiples of 4 bytes."
@@ -236,7 +219,7 @@ impl WaylandClient {
 
         Self {
             sock,
-            img_argb8: img_buf.into_u32_vec(),
+            img_argb8: img_buf,
             state: ClientState {
                 status: ClientStatus::Connected,
                 pending_ping: None,
@@ -367,9 +350,10 @@ impl WaylandClient {
         let image = self.img_argb8.as_slice();
 
         if let Some(surface_buf) = self.surface_buffers.as_mut() {
-            let img_row_stride = self.draw_width as usize;
+            let img_row_stride = self.draw_width as usize * 4;
 
-            let buf_row_stride = surface_buf.width as usize;
+            let buf_row_stride = surface_buf.width as usize * 4;
+            let buf_col_stride: usize = 4;
             let pixels = surface_buf.get_draw_buffer_mut();
 
             let x_offset = ((self.window_width - self.draw_width) / 2) as usize;
@@ -380,7 +364,8 @@ impl WaylandClient {
                 let img_row_start = row * img_row_stride;
                 let img_row = &image[img_row_start..img_row_start + img_row_stride];
 
-                let pixels_row_start = (row + y_offset) * buf_row_stride + x_offset;
+                let pixels_row_start =
+                    (row + y_offset) * buf_row_stride + x_offset * buf_col_stride;
                 let pixels_row = &mut pixels[pixels_row_start..pixels_row_start + img_row_stride];
 
                 pixels_row.copy_from_slice(img_row);
