@@ -1,18 +1,17 @@
 use std::{io, os::fd::AsRawFd};
 
 use memfd::{FileSeal, Memfd, MemfdOptions};
-use memmap2::MmapMut;
+use memmap2::{MmapMut, RemapOptions};
 
 /// ARGB888 formatted double buffer wayland shared memory
 pub struct WaylandShmDoubleBufARGB8888 {
-    pub size: u64,
+    pub size: usize,
     pub height: u32,
     pub width: u32,
     pub stride: u32,
 
     pub memfd: Memfd,
     pub mmap: MmapMut,
-    pub raw_fd: i32,
 }
 
 impl WaylandShmDoubleBufARGB8888 {
@@ -27,9 +26,9 @@ impl WaylandShmDoubleBufARGB8888 {
         let shm_file = memfd.as_file();
 
         let stride = width * 4;
-        let size = (stride as u64) * (height as u64) * 2; // *2 since two buffers
+        let size = (stride as usize) * (height as usize) * 2; // *2 since two buffers
         shm_file
-            .set_len(size)
+            .set_len(size as u64)
             .expect("Failed to allocate size for the `memfd` shared buffer.");
 
         let mut seals = memfd
@@ -48,8 +47,6 @@ impl WaylandShmDoubleBufARGB8888 {
             MmapMut::map_mut(shm_file).expect("Failed to `mmap` the `memfd` shared buffer.")
         };
 
-        let raw_fd = memfd.as_raw_fd();
-
         WaylandShmDoubleBufARGB8888 {
             size,
             stride,
@@ -57,23 +54,38 @@ impl WaylandShmDoubleBufARGB8888 {
             height,
             memfd,
             mmap,
-            raw_fd,
         }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) -> io::Result<()> {
+    /// Resizes the shared memory buffer and returns the old and the new sizes in bytes
+    /// Increases the size of the shared memory if the new size is more then the old size.
+    /// Changes the stride, height, and width in either case.
+    ///
+    /// Returns the old and the new size of the shared memory buffer in bytes
+    pub fn resize(&mut self, width: u32, height: u32) -> io::Result<(usize, usize)> {
         let stride = width * 4;
-        let new_size = (stride as u64) * (height as u64) * 2;
+        let new_size = (stride as usize) * (height as usize) * 2;
+        let old_size = self.size;
 
-        if new_size < self.size {
-            self.memfd.as_file().set_len(new_size)?;
+        if new_size > self.size {
+            self.memfd.as_file().set_len(new_size as u64)?;
 
-            self.width = width;
-            self.height = height;
-            self.stride = stride;
+            unsafe {
+                self.mmap
+                    .remap(new_size, RemapOptions::new().may_move(true))?
+            }
+
             self.size = new_size;
         }
 
-        Ok(())
+        self.width = width;
+        self.height = height;
+        self.stride = stride;
+
+        Ok((old_size, self.size))
+    }
+
+    pub fn get_raw_fd(&self) -> i32 {
+        self.memfd.as_raw_fd()
     }
 }

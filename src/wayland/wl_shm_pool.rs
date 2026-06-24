@@ -3,6 +3,7 @@ use std::io;
 pub mod opcodes {
     pub const CREATE_BUFFER: u16 = 0;
     pub const DESTROY: u16 = 1;
+    pub const RESIZE: u16 = 2;
 }
 
 pub trait WlShmPool: WaylandComm {
@@ -36,6 +37,12 @@ pub trait WlShmPool: WaylandComm {
         self.send_req(wl_shm_pool_id, opcodes::CREATE_BUFFER, args)?;
 
         Ok(new_id)
+    }
+
+    fn wl_shm_pool_resize(&mut self, wl_shm_pool_id: u32, size: u32) -> io::Result<()> {
+        self.send_req(wl_shm_pool_id, opcodes::RESIZE, &size.to_ne_bytes())?;
+
+        Ok(())
     }
 }
 
