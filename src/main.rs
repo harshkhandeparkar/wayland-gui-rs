@@ -399,7 +399,6 @@ impl WaylandClient {
                         .fill(0);
                 }
 
-                // TODO: Handle y-offset changes also; Currently this is only x-offset row-wise resetting
                 // Reset previous pixels from change in y-offset
                 let reset_y_range = if new_y_offset > self.y_offset {
                     // New offset is higher, so reset the initial part

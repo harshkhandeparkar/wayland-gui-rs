@@ -55,5 +55,4 @@ pub trait WlSurface: WaylandComm {
     }
 }
 
-
 impl<T: WaylandComm> WlSurface for T {}

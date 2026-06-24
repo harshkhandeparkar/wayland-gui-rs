@@ -43,5 +43,4 @@ pub trait XdgToplevel: WaylandComm {
     }
 }
 
-
 impl<T: WaylandComm> XdgToplevel for T {}

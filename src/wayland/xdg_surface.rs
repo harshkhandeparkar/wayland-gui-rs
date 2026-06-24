@@ -36,5 +36,4 @@ pub trait XdgSurface: WaylandComm {
     }
 }
 
-
 impl<T: WaylandComm> XdgSurface for T {}

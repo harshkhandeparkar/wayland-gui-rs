@@ -1,7 +1,7 @@
 use crate::wayland::InterfaceInfo;
 
 use super::{WaylandComm, write_wl_string};
-use std::{ffi::CStr, io};
+use std::io;
 
 pub mod events {
     pub const GLOBAL: u16 = 0;

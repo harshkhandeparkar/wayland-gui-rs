@@ -15,7 +15,7 @@ pub mod opcodes {
 pub struct WlDisplayError {
     pub object_id: u32,
     pub error_code: u32,
-    pub msg: CString
+    pub msg: CString,
 }
 
 pub trait WlDisplay: WaylandComm {
