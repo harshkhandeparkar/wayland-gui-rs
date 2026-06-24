@@ -170,8 +170,13 @@ struct WaylandClient {
     window_width: u32,
     window_height: u32,
 
-    draw_height: u32,
-    draw_width: u32,
+    draw_height: usize,
+    draw_width: usize,
+
+    /// x offset in the window to draw at
+    x_offset: usize,
+    /// y offset in the window to draw at
+    y_offset: usize,
 
     surface_buffers: Option<SurfaceBuffers>,
 }
@@ -232,8 +237,10 @@ impl WaylandClient {
 
             window_width: img_width,
             window_height: img_height,
-            draw_width: img_width,
-            draw_height: img_height,
+            draw_width: img_width as usize,
+            draw_height: img_height as usize,
+            x_offset: 0,
+            y_offset: 0,
 
             surface_buffers: None,
         }
@@ -350,44 +357,87 @@ impl WaylandClient {
         let image = self.img_argb8.as_slice();
 
         if let Some(surface_buf) = self.surface_buffers.as_mut() {
-            let img_row_stride = self.draw_width as usize * 4;
+            let img_row_stride = self.draw_width * 4;
 
             let buf_row_stride = surface_buf.width as usize * 4;
             let buf_col_stride: usize = 4;
-            let pixels = surface_buf.get_draw_buffer_mut();
+            let buf = surface_buf.get_draw_buffer_mut();
 
-            let x_offset = ((self.window_width - self.draw_width) / 2) as usize;
-            let y_offset = ((self.window_height - self.draw_height) / 2) as usize;
-            println!("drawing with offsets x = {x_offset} y = {y_offset}");
+            // New offsets
+            let new_x_offset = (self.window_width as usize - self.draw_width) / 2;
+            let new_y_offset = (self.window_height as usize - self.draw_height) / 2;
+            println!("drawing with new offsets x = {new_x_offset} y = {new_y_offset}");
+            if (new_x_offset != self.x_offset) || (new_y_offset != self.y_offset) {
+                let buf_col_offset = self.x_offset * buf_col_stride;
+                let new_buf_col_offset = new_x_offset * buf_col_stride;
 
-            for row in 0..(self.draw_height as usize) {
-                let img_row_start = row * img_row_stride;
-                let img_row = &image[img_row_start..img_row_start + img_row_stride];
+                let reset_x_range = if new_x_offset > self.x_offset {
+                    // New offset is higher, so reset the initial part
+                    (buf_col_offset, new_buf_col_offset)
+                } else {
+                    // New offset is lower, so reset the later part
+                    (
+                        (new_x_offset + self.draw_width) * buf_col_stride,
+                        (self.x_offset + self.draw_width) * buf_col_stride,
+                    )
+                };
 
-                let pixels_row_start =
-                    (row + y_offset) * buf_row_stride + x_offset * buf_col_stride;
-                let pixels_row = &mut pixels[pixels_row_start..pixels_row_start + img_row_stride];
+                for row in 0..self.draw_height {
+                    // Move the pixels to the new offset
+                    let img_row_offset = row * img_row_stride;
+                    let img_row = &image[img_row_offset..img_row_offset + img_row_stride];
 
-                pixels_row.copy_from_slice(img_row);
+                    let buf_row_offset = (row + new_y_offset) * buf_row_stride;
+                    let buf_draw_start = buf_row_offset + new_buf_col_offset;
+                    let buf_draw_end = buf_draw_start + img_row_stride;
+
+                    let buf_draw_area = &mut buf[buf_draw_start..buf_draw_end];
+                    buf_draw_area.copy_from_slice(img_row);
+
+                    // Reset the remaining area (old pixels)
+                    buf[(buf_row_offset + reset_x_range.0)..(buf_row_offset + reset_x_range.1)]
+                        .fill(0);
+                }
+
+                // TODO: Handle y-offset changes also; Currently this is only x-offset row-wise resetting
+                // Reset previous pixels from change in y-offset
+                let reset_y_range = if new_y_offset > self.y_offset {
+                    // New offset is higher, so reset the initial part
+                    self.y_offset * buf_row_stride + buf_col_offset
+                        ..new_y_offset * buf_row_stride + buf_col_offset
+                } else {
+                    // New offset is lower, so reset the later part
+                    (new_y_offset + self.draw_height) * buf_row_stride + buf_col_offset
+                        ..(self.y_offset + self.draw_height) * buf_row_stride + buf_col_offset
+                };
+
+                for reset_y_start in reset_y_range.step_by(buf_row_stride) {
+                    buf[reset_y_start..reset_y_start + img_row_stride].fill(0);
+                }
+
+                let attach_buf_id = surface_buf.commit_draw();
+
+                self.sock
+                    .wl_surface_attach(self.interfaces.wl_surface, attach_buf_id)?;
+                println!(
+                    "Successfully attached front buffer id {attach_buf_id} to the `wl_surface`."
+                );
+
+                self.sock.wl_surface_damage_buffer(
+                    self.interfaces.wl_surface,
+                    new_x_offset.min(self.x_offset) as i32,
+                    new_y_offset.min(self.y_offset) as i32,
+                    (self.draw_width + self.x_offset.abs_diff(new_x_offset)) as i32,
+                    (self.draw_height + self.y_offset.abs_diff(new_y_offset)) as i32,
+                )?;
+                println!("Successfully damaged the `wl_surface`.");
+
+                self.x_offset = new_x_offset;
+                self.y_offset = new_y_offset;
+
+                self.sock.wl_surface_commit(self.interfaces.wl_surface)?;
+                println!("Successfully committed to the `wl_surface`.");
             }
-
-            let attach_buf_id = surface_buf.commit_draw();
-
-            self.sock
-                .wl_surface_attach(self.interfaces.wl_surface, attach_buf_id)?;
-            println!("Successfully attached front buffer id {attach_buf_id} to the `wl_surface`.");
-
-            self.sock.wl_surface_damage_buffer(
-                self.interfaces.wl_surface,
-                x_offset as i32,
-                y_offset as i32,
-                self.draw_width as i32,
-                self.draw_height as i32,
-            )?;
-            println!("Successfully damaged the `wl_surface`.");
-
-            self.sock.wl_surface_commit(self.interfaces.wl_surface)?;
-            println!("Successfully committed to the `wl_surface`.");
         } else {
             panic!("Draw buffer not found.");
         }
